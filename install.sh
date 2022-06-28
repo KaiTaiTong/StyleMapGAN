@@ -6,3 +6,5 @@ conda install -y -c anaconda ipython=7.13.0
 pip install lmdb==0.98 opencv-python==4.2.0.34 munch==2.5.0
 pip install -U scikit-image==0.15.0 scipy==1.2.1 matplotlib scikit-learn
 pip install flask==1.0.2 pillow==7.0.0
+pip install tqdm
+pip install torchvision
