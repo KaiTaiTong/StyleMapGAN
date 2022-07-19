@@ -204,10 +204,10 @@ if __name__ == "__main__":
             "stylemixing",
             "random_generation",
         ],
-        required=True,
+        default="local_editing"
     )
-    parser.add_argument("--ckpt", metavar="CHECKPOINT", required=True)
-    parser.add_argument("--test_lmdb", type=str)
+    parser.add_argument("--ckpt", metavar="CHECKPOINT", default="./expr/checkpoints/celeba_hq_256_8x8.pt")
+    parser.add_argument("--test_lmdb", type=str, default="data/celeba_hq/LMDB_test")
     parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--num_workers", type=int, default=10)
     parser.add_argument("--save_image_dir", type=str, default="expr")
@@ -216,7 +216,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--local_editing_part",
         type=str,
-        default=None,
+        default="nose",
         choices=[
             "nose",
             "hair",

@@ -57,10 +57,23 @@ class MultiResolutionDataset(Dataset):
 
 
 class GTMaskDataset(Dataset):
-    def __init__(self, dataset_folder, transform, resolution=256):
+    def __init__(self, lmdb_folder, transform, resolution=256):
+
+        # Get images dataset type
+        if 'LMDB_train' in lmdb_folder:
+            dataset_type = 'train'
+        elif 'LMDB_test' in lmdb_folder:
+            dataset_type = 'test'
+        elif 'LMDB_val' in lmdb_folder:
+            dataset_type = 'val'
+        else:
+            raise ValueError("Unknown lmdb dataset type")
+        
+        # dataset_folder is the parent directory of lmdb_folder
+        dataset_folder = '/'.join(lmdb_folder.split('/')[:-1])
 
         self.env = lmdb.open(
-            f"{dataset_folder}/LMDB_test",
+            lmdb_folder,
             max_readers=32,
             readonly=True,
             lock=False,
@@ -69,7 +82,7 @@ class GTMaskDataset(Dataset):
         )
 
         if not self.env:
-            raise IOError("Cannot open lmdb dataset", f"{dataset_folder}/LMDB_test")
+            raise IOError("Cannot open lmdb dataset", lmdb_folder)
 
         with self.env.begin(write=False) as txn:
             self.length = int(txn.get("length".encode("utf-8")).decode("utf-8"))
@@ -83,9 +96,12 @@ class GTMaskDataset(Dataset):
         )
         CelebA_to_CelebA_HQ_dict = {}
 
-        original_test_path = f"{dataset_folder}/raw_images/test/images"
-        mask_label_path = f"{dataset_folder}/local_editing/GT_labels"
+        # Path to original images and mask labels
+        original_path = f"{dataset_folder}/raw_images/{dataset_type}/images"
+        mask_label_path = f"{dataset_folder}/CelebAMask-HQ/CelebAMaskHQ-mask"
 
+        # Fill CelebA_to_CelebA_HQ_dict dict that maps celeba dataset *.jpg -> index
+        # for a total of 30000 samples
         with open(CelebA_HQ_to_CelebA, "r") as fp:
             read_line = fp.readline()
             attrs = re.sub(" +", " ", read_line).strip().split(" ")
@@ -103,7 +119,9 @@ class GTMaskDataset(Dataset):
 
         self.mask = []
 
-        for filename in os.listdir(original_test_path):
+        # LMDB file is generated in alphabetical order of the imgs file, thus we need to 
+        # sort the listdir as well to make mask match the input imgs
+        for filename in sorted(os.listdir(original_path)):
             CelebA_HQ_filename = CelebA_to_CelebA_HQ_dict[filename]
             CelebA_HQ_filename = CelebA_HQ_filename + ".png"
             self.mask.append(os.path.join(mask_label_path, CelebA_HQ_filename))
