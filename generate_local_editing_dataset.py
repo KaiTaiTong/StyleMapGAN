@@ -139,15 +139,10 @@ transform = transforms.Compose([
 if __name__ == "__main__":
 
     ckpt_path = "./expr/checkpoints/celeba_hq_256_8x8.pt"
-    lmdb_file = "data/celeba_hq/LMDB_val"  # input images in mdb file
-    num_samples_per_class = 100
+    lmdb_file = "data/celeba_hq/LMDB_train"  # input images in mdb file
+    num_samples_per_class = 500
     batch = 16
     num_workers = 10
-    save_image_dir = "expr"
-    # local_editing_part = "nose"
-    # local_editing_part = "ear"
-    local_editing_part = "eye"
-    # local_editing_part = "lip"
 
     device = "cuda"
 
@@ -158,210 +153,234 @@ if __name__ == "__main__":
     model.g_ema.load_state_dict(ckpt["g_ema"])
     model.e_ema.load_state_dict(ckpt["e_ema"])
     model.eval()
-
+    
+    # Get images dataset type
+    if 'LMDB_train' in lmdb_file:
+        dataset_type = 'train'
+    elif 'LMDB_test' in lmdb_file:
+        dataset_type = 'test'
+    elif 'LMDB_val' in lmdb_file:
+        dataset_type = 'val'
+    else:
+        raise ValueError("Unknown lmdb dataset type")
+    
     # Set output path
-    save_image_dir = os.path.join(save_image_dir, MIXING_TYPE,
-                                  train_args.dataset)
-    if train_args.dataset == "afhq":
-        save_image_dir = os.path.join(save_image_dir)
-        for kind in [
-                "output_diff_mask",  # diff between reconstructed src. and output binary mask
-                "editing_mask",  # binary mask for local editing region
-                "reference_reconstruction",  # reconstructed ref. img
-                "source_reconstruction",  # reconstructed src. img         
-                "synthesized_image"  # local edited img
-        ]:
-            os.makedirs(os.path.join(save_image_dir, kind), exist_ok=True)
-    else:  # celeba_hq
-        save_image_dir = os.path.join(save_image_dir, local_editing_part)
-        for kind in [
-                "output_diff_mask",  # diff between reconstructed src. and output binary mask
-                "editing_mask",  # binary mask for local editing region
-                "reference_reconstruction",  # reconstructed ref. img
-                "source_reconstruction",  # reconstructed src. img         
-                "synthesized_image"  # local edited img
-        ]:
-            os.makedirs(os.path.join(save_image_dir, kind), exist_ok=True)
-        mask_path_base = f"data/{train_args.dataset}/local_editing"
+    save_image_dir = f"expr/{MIXING_TYPE}/celeba_hq/{dataset_type}"
 
-    # Prepare Dataset
-    if train_args.dataset == "celeba_hq":
-        assert "celeba_hq" in lmdb_file
+    for local_editing_part in LOCAL_EDITING_PART_CHOICES:
 
-        # CelebA dataset contains an RGB img, and a classification mask pair
-        # parts_index represents the indices for each parts in the mask
-        dataset = GTMaskDataset(lmdb_file, transform, train_args.size)
+        if train_args.dataset == "afhq":
 
-        parts_index = {
-            "background": [0],
-            "skin": [1],
-            "eyebrow": [6, 7],
-            "eye": [3, 4, 5],
-            "ear": [8, 9, 15],
-            "nose": [2],
-            "lip": [10, 11, 12],
-            "neck": [16, 17],
-            "cloth": [18],
-            "hair": [13, 14],
-        }
+            for kind in [
+                    "output_diff_mask",  # diff between reconstructed src. and output binary mask
+                    "editing_mask",  # binary mask for local editing region
+                    "reference_reconstruction",  # reconstructed ref. img
+                    "source_reconstruction",  # reconstructed src. img         
+                    "synthesized_image"  # local edited img
+            ]:
+                os.makedirs(os.path.join(save_image_dir, kind), exist_ok=True)
 
-    # afhq, coarse(half-and-half) masks
-    else:
-        assert "afhq" in lmdb_file and "afhq" == train_args.dataset
-        dataset = MultiResolutionDataset(lmdb_file, transform, train_args.size)
+        else:  # celeba_hq
 
-    # Prepare Dataloader
-    n_sample = len(dataset)
-    sampler = data_sampler(dataset, shuffle=False)
+            save_image_child_dir = os.path.join(save_image_dir, local_editing_part)
+            for kind in [
+                    "output_diff_mask",  # diff between reconstructed src. and output binary mask
+                    "editing_mask",  # binary mask for local editing region
+                    "reference_reconstruction",  # reconstructed ref. img
+                    "source_reconstruction",  # reconstructed src. img         
+                    "synthesized_image"  # local edited img
+            ]:
+                os.makedirs(os.path.join(save_image_child_dir, kind), exist_ok=True)
+            mask_path_base = f"data/{train_args.dataset}/local_editing"
 
-    loader = data.DataLoader(
-        dataset,
-        batch,
-        sampler=sampler,
-        num_workers=num_workers,
-        pin_memory=True,
-        drop_last=False,
-    )
+        # Prepare Dataset
+        if train_args.dataset == "celeba_hq":
+            assert "celeba_hq" in lmdb_file
 
-    # generated images should match with n sample
-    if n_sample % batch == 0:
-        assert len(loader) == n_sample // batch
-    else:
-        assert len(loader) == n_sample // batch + 1
+            # CelebA dataset contains an RGB img, and a classification mask pair
+            # parts_index represents the indices for each parts in the mask
+            dataset = GTMaskDataset(lmdb_file, transform, train_args.size)
 
-    total_latents = torch.Tensor().to(device)  # Outputs of models
-    real_imgs = torch.Tensor().to(device)  # real images
+            parts_index = {
+                "background": [0],
+                "skin": [1],
+                "eyebrow": [6, 7],
+                "eye": [3, 4, 5],
+                "ear": [8, 9, 15],
+                "nose": [2],
+                "lip": [10, 11, 12],
+                "neck": [16, 17],
+                "cloth": [18],
+                "hair": [13, 14],
+            }
 
-    if train_args.dataset == "afhq":
-        masks = (-2 * torch.ones(n_sample, train_args.size,
-                                 train_args.size).to(device).float())
-        mix_type = list(range(n_sample))
-        random.shuffle(mix_type)
-        horizontal_mix = mix_type[:n_sample // 2]
-        vertical_mix = mix_type[n_sample // 2:]
+        # afhq, coarse(half-and-half) masks
+        else:
+            assert "afhq" in lmdb_file and "afhq" == train_args.dataset
+            dataset = MultiResolutionDataset(lmdb_file, transform, train_args.size)
 
-        masks[horizontal_mix, :, train_args.size // 2:] = 2
-        masks[vertical_mix, train_args.size // 2:, :] = 2
-    else:
-        masks = torch.Tensor().to(device).long()
+        # Prepare Dataloader
+        n_sample = len(dataset)
+        sampler = data_sampler(dataset, shuffle=False)
 
-    # Local editing
-    with torch.no_grad():
+        loader = data.DataLoader(
+            dataset,
+            batch,
+            sampler=sampler,
+            num_workers=num_workers,
+            pin_memory=True,
+            drop_last=False,
+        )
 
-        # Concatenate real imgs and its latents
-        for i, real_img in enumerate(tqdm(loader, mininterval=1)):
-            if train_args.dataset == "celeba_hq":
-                real_img, mask = real_img  # unpack image and mask
-                mask = mask.to(device)
-                masks = torch.cat([masks, mask], dim=0)
-            real_img = real_img.to(device)
+        # generated images should match with n sample
+        if n_sample % batch == 0:
+            assert len(loader) == n_sample // batch
+        else:
+            assert len(loader) == n_sample // batch + 1
 
-            latents = model(real_img, "projection")
+        total_latents = torch.Tensor().to(device)  # Outputs of models
+        real_imgs = torch.Tensor().to(device)  # real images
 
-            total_latents = torch.cat([total_latents, latents], dim=0)
-            real_imgs = torch.cat([real_imgs, real_img], dim=0)
+        if train_args.dataset == "afhq":
+            masks = (-2 * torch.ones(n_sample, train_args.size,
+                                    train_args.size).to(device).float())
+            mix_type = list(range(n_sample))
+            random.shuffle(mix_type)
+            horizontal_mix = mix_type[:n_sample // 2]
+            vertical_mix = mix_type[n_sample // 2:]
 
-        # We don't want to hand pick the pairing based on similarity, because
-        # we want the prediction model to be trained on a mixture of good and
-        # bad samples
+            masks[horizontal_mix, :, train_args.size // 2:] = 2
+            masks[vertical_mix, train_args.size // 2:, :] = 2
+        else:
+            masks = torch.Tensor().to(device).long()
 
-        # Randomly pick unique pairs of src and ref
-        indices1, indices2 = get_src_ref_pair(len(total_latents), num_samples_per_class)
+        # Local editing
+        with torch.no_grad():
 
-        # if train_args.dataset == "afhq":
-        #     # change it later
-        #     indices = list(range(len(total_latents)))
-        #     random.shuffle(indices)
-        #     indices1 = indices[:len(total_latents) // 2] # first half
-        #     indices2 = indices[len(total_latents) // 2:] # second half
+            # Concatenate real imgs and its latents
+            for i, real_img in enumerate(tqdm(loader, mininterval=1)):
+                if train_args.dataset == "celeba_hq":
+                    real_img, mask = real_img  # unpack image and mask
+                    mask = mask.to(device)
+                    masks = torch.cat([masks, mask], dim=0)
+                real_img = real_img.to(device)
 
-        # else:
-        # with open(
-        #         f"{mask_path_base}/celeba_hq_test_GT_sorted_pair.pkl",
-        #         "rb",
-        # ) as f:
-        #     sorted_similarity = pickle.load(f)
+                latents = model(real_img, "projection")
 
-        # indices1 = []
-        # indices2 = []
-        # for (i1, i2), _ in sorted_similarity[local_editing_part]:
-        #     indices1.append(i1)
-        #     indices2.append(i2)
+                total_latents = torch.cat([total_latents, latents], dim=0)
+                real_imgs = torch.cat([real_imgs, real_img], dim=0)
 
-        for loop_i, (index1, index2) in tqdm(enumerate(zip(indices1,
-                                                           indices2)),
-                                             total=n_sample):
-            src_img = real_imgs[index1]
-            ref_img = real_imgs[index2]
+            # We don't want to hand pick the pairing based on similarity, because
+            # we want the prediction model to be trained on a mixture of good and
+            # bad samples
 
-            if train_args.dataset == "celeba_hq":
-                mask1_logit = masks[index1]
-                mask2_logit = masks[index2]
+            # Randomly pick unique pairs of src and ref
+            indices1, indices2 = get_src_ref_pair(len(total_latents), num_samples_per_class)
 
-                mask1 = -torch.ones(mask1_logit.shape).to(
-                    device)  # initialize with -1
-                mask2 = -torch.ones(mask2_logit.shape).to(
-                    device)  # initialize with -1
+            # if train_args.dataset == "afhq":
+            #     # change it later
+            #     indices = list(range(len(total_latents)))
+            #     random.shuffle(indices)
+            #     indices1 = indices[:len(total_latents) // 2] # first half
+            #     indices2 = indices[len(total_latents) // 2:] # second half
 
-                for label_i in parts_index[local_editing_part]:
-                    mask1[(mask1_logit == label_i) == True] = 1
-                    mask2[(mask2_logit == label_i) == True] = 1
+            # else:
+            # with open(
+            #         f"{mask_path_base}/celeba_hq_test_GT_sorted_pair.pkl",
+            #         "rb",
+            # ) as f:
+            #     sorted_similarity = pickle.load(f)
 
-                mask = mask1 + mask2
-                mask = mask.float()
-            elif train_args.dataset == "afhq":
-                mask = masks[index1]
+            # indices1 = []
+            # indices2 = []
+            # for (i1, i2), _ in sorted_similarity[local_editing_part]:
+            #     indices1.append(i1)
+            #     indices2.append(i2)
 
-            mixed_image, recon_img_src, recon_img_ref = model(
-                (total_latents[index1], total_latents[index2], mask),
-                "local_editing",
-            )
+            for loop_i, (index1, index2) in tqdm(enumerate(zip(indices1,
+                                                            indices2)),
+                                                total=n_sample):
+                src_img = real_imgs[index1]
+                ref_img = real_imgs[index2]
 
-            save_images(
-                [
-                    mixed_image[0],
-                    recon_img_src[0],
-                    recon_img_ref[0],
-                ],
-                [
-                    f"{save_image_dir}/synthesized_image/{index1}.png",
-                    f"{save_image_dir}/source_reconstruction/{index1}.png",
-                    f"{save_image_dir}/reference_reconstruction/{index1}.png",
-                ],
-            )
+                if train_args.dataset == "celeba_hq":
+                    mask1_logit = masks[index1]
+                    mask2_logit = masks[index2]
 
-            mask[mask < -1] = -1
-            mask[mask > -1] = 1
+                    mask1 = -torch.ones(mask1_logit.shape).to(
+                        device)  # initialize with -1
+                    mask2 = -torch.ones(mask2_logit.shape).to(
+                        device)  # initialize with -1
 
-            # Generate output difference binary mask (weak)
-            output_binary_mask = torch.abs(mixed_image[0] - recon_img_src[0])
-            output_binary_mask[torch.where(
-                output_binary_mask > torch.max(output_binary_mask) *
-                THRESHOLD)] = 1
-            output_binary_mask[torch.where(output_binary_mask != 1)] = 0
-            output_binary_mask = torch.all(output_binary_mask.type(
-                torch.uint8),
-                                           axis=0).float()
+                    for label_i in parts_index[local_editing_part]:
+                        mask1[(mask1_logit == label_i) == True] = 1
+                        mask2[(mask2_logit == label_i) == True] = 1
 
-            output_binary_mask[output_binary_mask < 1] = -1
-            output_binary_mask[output_binary_mask > 0] = 1
+                    mask = mask1 + mask2
+                    mask = mask.float()
+                elif train_args.dataset == "afhq":
+                    mask = masks[index1]
 
-            # #################### View #################### 
-            # import matplotlib.pyplot as plt
-            # plt.imshow(output_binary_mask.cpu(), cmap='gray')
+                mixed_image, recon_img_src, recon_img_ref = model(
+                    (total_latents[index1], total_latents[index2], mask),
+                    "local_editing",
+                )
 
-            # import matplotlib.pyplot as plt
-            # plt.imshow(np.rot90(np.swapaxes(real_img[2, :].cpu(), 0, -1), 3))
-            # plt.imshow(mask[2, :].cpu(), cmap='gray')
+                save_images(
+                    [
+                        mixed_image[0],
+                        recon_img_src[0],
+                        recon_img_ref[0],
+                    ],
+                    [
+                        f"{save_image_child_dir}/synthesized_image/{index1}.png",
+                        f"{save_image_child_dir}/source_reconstruction/{index1}.png",
+                        f"{save_image_child_dir}/reference_reconstruction/{index1}.png",
+                    ],
+                )
 
-            # for i, real_img in enumerate(dataset):
-            #     real_img, mask = real_img
-            #     fig, (ax1, ax2) = plt.subplots(1, 2)
-            #     ax1.imshow(np.rot90(np.swapaxes(real_img.cpu(), 0, -1), 3))
-            #     ax2.imshow(mask.cpu(), cmap='gray')
-            #     plt.show()
+                mask[mask < -1] = -1
+                mask[mask > -1] = 1
 
-            save_images([output_binary_mask, mask], [
-                f"{save_image_dir}/output_diff_mask/{index1}.png",
-                f"{save_image_dir}/editing_mask/{index1}.png",
-            ])
+                # Generate output difference binary mask (weak)
+                output_binary_mask = torch.abs(mixed_image[0] - recon_img_src[0])
+                output_binary_mask[torch.where(
+                    output_binary_mask > torch.max(output_binary_mask) *
+                    THRESHOLD)] = 1
+                output_binary_mask[torch.where(output_binary_mask != 1)] = 0
+                output_binary_mask = torch.all(output_binary_mask.type(
+                    torch.uint8),
+                                            axis=0).float()
+
+                output_binary_mask[output_binary_mask < 1] = -1
+                output_binary_mask[output_binary_mask > 0] = 1
+
+                # #################### View #################### 
+                # import matplotlib.pyplot as plt
+                # plt.imshow(output_binary_mask.cpu(), cmap='gray')
+
+                # import matplotlib.pyplot as plt
+                # plt.imshow(np.rot90(np.swapaxes(real_img[2, :].cpu(), 0, -1), 3))
+                # plt.imshow(mask[2, :].cpu(), cmap='gray')
+
+                # for i, real_img in enumerate(dataset):
+                #     real_img, mask = real_img
+                #     fig, (ax1, ax2) = plt.subplots(1, 2)
+                #     ax1.imshow(np.rot90(np.swapaxes(real_img.cpu(), 0, -1), 3))
+                #     ax2.imshow(mask.cpu(), cmap='gray')
+                #     plt.show()
+
+                save_images([output_binary_mask, mask], [
+                    f"{save_image_child_dir}/output_diff_mask/{index1}.png",
+                    f"{save_image_child_dir}/editing_mask/{index1}.png",
+                ])
+
+        # clean up torch tensors
+        del dataset
+        del loader
+        del total_latents
+        del real_imgs
+        del masks
+        del real_img
+        del mask
+        torch.cuda.empty_cache() 
