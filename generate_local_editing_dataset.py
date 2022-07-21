@@ -35,27 +35,15 @@ def get_src_ref_pair(total_num_samples, num_pairs):
     Randomly generate num_pairs src and ref indices pair given total number of samples. No 
     duplicated indices could be both src and ref at the same time, and no duplicated pairs 
     """
-    indices = set(range(total_num_samples))
-    pairing_table = {k: indices-set([k]) for k in indices} # initialize avaliable pairs
-
-    indices1, indices2 = [], []
-    for i in range(num_pairs):
-        
-        # src indices must be selected from available keys
-        avaliable_src = [k for k in indices if len(pairing_table[k]) > 0]
-        
-        if len(avaliable_src) > 0:
-            current_src = random.sample(set(avaliable_src), 1)[0]
-            current_ref = random.sample(pairing_table[current_src], 1)[0]
-            
-            indices1.append(current_src)
-            indices2.append(current_ref)
-            pairing_table[current_src] -= {current_ref}  # update table
-
-        else:
-            warnings.warn("Not enough indices to make unique pairs. Total pairs generated: {}".format(len(indices1)))
-            break
-
+    # Do random selection without repeatation
+    selection = random.sample(
+        range(total_num_samples * (total_num_samples - 1)), num_pairs)
+    indices1 = [i // (total_num_samples - 1) for i in selection]
+    indices2 = [
+        i % (total_num_samples - 1) + 1 if (i % (total_num_samples - 1)) >=
+        (i // (total_num_samples - 1)) else i % (total_num_samples - 1)
+        for i in selection
+    ]
     return indices1, indices2
 
 
@@ -141,8 +129,8 @@ if __name__ == "__main__":
     ckpt_path = "./expr/checkpoints/celeba_hq_256_8x8.pt"
     lmdb_file = "data/celeba_hq/LMDB_train"  # input images in mdb file
     num_samples_per_class = 500
-    batch = 16
-    num_workers = 10
+    batch = 1
+    num_workers = 0  # fixed 0
 
     device = "cuda"
 
@@ -153,7 +141,7 @@ if __name__ == "__main__":
     model.g_ema.load_state_dict(ckpt["g_ema"])
     model.e_ema.load_state_dict(ckpt["e_ema"])
     model.eval()
-    
+
     # Get images dataset type
     if 'LMDB_train' in lmdb_file:
         dataset_type = 'train'
@@ -163,7 +151,7 @@ if __name__ == "__main__":
         dataset_type = 'val'
     else:
         raise ValueError("Unknown lmdb dataset type")
-    
+
     # Set output path
     save_image_dir = f"expr/{MIXING_TYPE}/celeba_hq/{dataset_type}"
 
@@ -182,7 +170,8 @@ if __name__ == "__main__":
 
         else:  # celeba_hq
 
-            save_image_child_dir = os.path.join(save_image_dir, local_editing_part)
+            save_image_child_dir = os.path.join(save_image_dir,
+                                                local_editing_part)
             for kind in [
                     "output_diff_mask",  # diff between reconstructed src. and output binary mask
                     "editing_mask",  # binary mask for local editing region
@@ -190,7 +179,8 @@ if __name__ == "__main__":
                     "source_reconstruction",  # reconstructed src. img         
                     "synthesized_image"  # local edited img
             ]:
-                os.makedirs(os.path.join(save_image_child_dir, kind), exist_ok=True)
+                os.makedirs(os.path.join(save_image_child_dir, kind),
+                            exist_ok=True)
             mask_path_base = f"data/{train_args.dataset}/local_editing"
 
         # Prepare Dataset
@@ -217,7 +207,8 @@ if __name__ == "__main__":
         # afhq, coarse(half-and-half) masks
         else:
             assert "afhq" in lmdb_file and "afhq" == train_args.dataset
-            dataset = MultiResolutionDataset(lmdb_file, transform, train_args.size)
+            dataset = MultiResolutionDataset(lmdb_file, transform,
+                                             train_args.size)
 
         # Prepare Dataloader
         n_sample = len(dataset)
@@ -238,74 +229,33 @@ if __name__ == "__main__":
         else:
             assert len(loader) == n_sample // batch + 1
 
-        total_latents = torch.Tensor().to(device)  # Outputs of models
-        real_imgs = torch.Tensor().to(device)  # real images
-
-        if train_args.dataset == "afhq":
-            masks = (-2 * torch.ones(n_sample, train_args.size,
-                                    train_args.size).to(device).float())
-            mix_type = list(range(n_sample))
-            random.shuffle(mix_type)
-            horizontal_mix = mix_type[:n_sample // 2]
-            vertical_mix = mix_type[n_sample // 2:]
-
-            masks[horizontal_mix, :, train_args.size // 2:] = 2
-            masks[vertical_mix, train_args.size // 2:, :] = 2
-        else:
-            masks = torch.Tensor().to(device).long()
-
         # Local editing
+        # We don't want to hand pick the pairing based on similarity, because
+        # we want the prediction model to be trained on a mixture of good and
+        # bad samples
+
+        # Randomly pick unique pairs of src and ref
+        indices1, indices2 = get_src_ref_pair(n_sample, num_samples_per_class)
+
         with torch.no_grad():
 
-            # Concatenate real imgs and its latents
-            for i, real_img in enumerate(tqdm(loader, mininterval=1)):
-                if train_args.dataset == "celeba_hq":
-                    real_img, mask = real_img  # unpack image and mask
-                    mask = mask.to(device)
-                    masks = torch.cat([masks, mask], dim=0)
-                real_img = real_img.to(device)
+            for loop_i, (index1,
+                         index2) in tqdm(enumerate(zip(indices1, indices2)),
+                                         total=len(indices1)):
 
-                latents = model(real_img, "projection")
+                src_img, mask1_logit = loader.dataset[index1]
+                ref_img, mask2_logit = loader.dataset[index2]
 
-                total_latents = torch.cat([total_latents, latents], dim=0)
-                real_imgs = torch.cat([real_imgs, real_img], dim=0)
-
-            # We don't want to hand pick the pairing based on similarity, because
-            # we want the prediction model to be trained on a mixture of good and
-            # bad samples
-
-            # Randomly pick unique pairs of src and ref
-            indices1, indices2 = get_src_ref_pair(len(total_latents), num_samples_per_class)
-
-            # if train_args.dataset == "afhq":
-            #     # change it later
-            #     indices = list(range(len(total_latents)))
-            #     random.shuffle(indices)
-            #     indices1 = indices[:len(total_latents) // 2] # first half
-            #     indices2 = indices[len(total_latents) // 2:] # second half
-
-            # else:
-            # with open(
-            #         f"{mask_path_base}/celeba_hq_test_GT_sorted_pair.pkl",
-            #         "rb",
-            # ) as f:
-            #     sorted_similarity = pickle.load(f)
-
-            # indices1 = []
-            # indices2 = []
-            # for (i1, i2), _ in sorted_similarity[local_editing_part]:
-            #     indices1.append(i1)
-            #     indices2.append(i2)
-
-            for loop_i, (index1, index2) in tqdm(enumerate(zip(indices1,
-                                                            indices2)),
-                                                total=n_sample):
-                src_img = real_imgs[index1]
-                ref_img = real_imgs[index2]
+                src_img = src_img.to(device)
+                ref_img = ref_img.to(device)
+                mask1_logit = mask1_logit.to(device)
+                mask2_logit = mask2_logit.to(device)
+                
+                src_img, ref_img = src_img[None, :], ref_img[None, :]
+                latents1, latents2 = model(src_img, "projection").squeeze(0), \
+                                     model(ref_img, "projection").squeeze(0)
 
                 if train_args.dataset == "celeba_hq":
-                    mask1_logit = masks[index1]
-                    mask2_logit = masks[index2]
 
                     mask1 = -torch.ones(mask1_logit.shape).to(
                         device)  # initialize with -1
@@ -322,7 +272,7 @@ if __name__ == "__main__":
                     mask = masks[index1]
 
                 mixed_image, recon_img_src, recon_img_ref = model(
-                    (total_latents[index1], total_latents[index2], mask),
+                    (latents1, latents2, mask),
                     "local_editing",
                 )
 
@@ -343,19 +293,20 @@ if __name__ == "__main__":
                 mask[mask > -1] = 1
 
                 # Generate output difference binary mask (weak)
-                output_binary_mask = torch.abs(mixed_image[0] - recon_img_src[0])
+                output_binary_mask = torch.abs(mixed_image[0] -
+                                               recon_img_src[0])
                 output_binary_mask[torch.where(
                     output_binary_mask > torch.max(output_binary_mask) *
                     THRESHOLD)] = 1
                 output_binary_mask[torch.where(output_binary_mask != 1)] = 0
                 output_binary_mask = torch.all(output_binary_mask.type(
                     torch.uint8),
-                                            axis=0).float()
+                                               axis=0).float()
 
                 output_binary_mask[output_binary_mask < 1] = -1
                 output_binary_mask[output_binary_mask > 0] = 1
 
-                # #################### View #################### 
+                # #################### View ####################
                 # import matplotlib.pyplot as plt
                 # plt.imshow(output_binary_mask.cpu(), cmap='gray')
 
@@ -378,9 +329,5 @@ if __name__ == "__main__":
         # clean up torch tensors
         del dataset
         del loader
-        del total_latents
-        del real_imgs
-        del masks
-        del real_img
         del mask
-        torch.cuda.empty_cache() 
+        torch.cuda.empty_cache()
