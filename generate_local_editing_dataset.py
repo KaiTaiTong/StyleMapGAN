@@ -1,19 +1,20 @@
 import torch
 from torch import nn
+from training.model import Model, load_model
 from torch.nn import functional as F
 from torch.utils import data
 from torchvision import utils, transforms
 import os
+import csv
 import pickle
 import random
-from training.model import Generator, Encoder
 from tqdm import tqdm
 import numpy as np
 from training.dataset import MultiResolutionDataset, GTMaskDataset
 import matplotlib.pyplot as plt
 import warnings
+import argparse
 
-MIXING_TYPE = 'local_editing'
 LOCAL_EDITING_PART_CHOICES = [
     "nose",
     "hair",
@@ -26,8 +27,24 @@ LOCAL_EDITING_PART_CHOICES = [
     "skin",
     "ear",
 ]
+PARTS_INDEX = {
+    "background": [0],
+    "skin": [1],
+    "eyebrow": [6, 7],
+    "eye": [3, 4, 5],
+    "ear": [8, 9, 15],
+    "nose": [2],
+    "lip": [10, 11, 12],
+    "neck": [16, 17],
+    "cloth": [18],
+    "hair": [13, 14],
+}  # indices for each parts in the mask
 DATASET_LIST = ['celeba_hq', 'afhq']
-THRESHOLD = 1 / 7  # threshold for weak-binary mask
+
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True),
+])
 
 
 def get_src_ref_pair(total_num_samples, num_pairs):
@@ -45,6 +62,19 @@ def get_src_ref_pair(total_num_samples, num_pairs):
         for i in selection
     ]
     return indices1, indices2
+
+
+def save_src_ref_pair(output_file, indices1, indices2):
+    """
+    Save src and ref pairs as csv, based on img indices in lmdb dataset
+    """
+    assert (len(indices1) == len(indices2)
+            ), "indices1 and indices2 must have same size"
+    with open(output_file, 'w') as file:
+        file.write('mixed_index, src_index, ref_index\n')
+        for i, _ in enumerate(indices1):
+            file.write(f"{i}, {indices1[i]}, {indices2[i]}\n")
+    print("file completed")
 
 
 def save_image(img, path, normalize=True, range=(-1, 1)):
@@ -68,166 +98,28 @@ def data_sampler(dataset, shuffle):
         return data.SequentialSampler(dataset)
 
 
-class Model(nn.Module):
-
-    def __init__(self, device="cuda"):
-        super(Model, self).__init__()
-        self.g_ema = Generator(
-            train_args.size,
-            train_args.mapping_layer_num,
-            train_args.latent_channel_size,
-            train_args.latent_spatial_size,
-            lr_mul=train_args.lr_mul,
-            channel_multiplier=train_args.channel_multiplier,
-            normalize_mode=train_args.normalize_mode,
-            small_generator=train_args.small_generator,
-        )
-        self.e_ema = Encoder(
-            train_args.size,
-            train_args.latent_channel_size,
-            train_args.latent_spatial_size,
-            channel_multiplier=train_args.channel_multiplier,
-        )
-
-    def forward(self, input, mode):
-
-        if mode == "projection":
-            fake_stylecode = self.e_ema(input)
-            return fake_stylecode
-
-        elif mode == "local_editing":
-            w1, w2, mask = input
-            w1, w2, mask = w1.unsqueeze(0), w2.unsqueeze(0), mask.unsqueeze(0)
-
-            if train_args.dataset == "celeba_hq":
-                mixed_image = self.g_ema(
-                    [w1, w2],
-                    input_is_stylecode=True,
-                    mix_space="w_plus",
-                    mask=mask,
-                )[0]
-
-            elif train_args.dataset == "afhq":
-                mixed_image = self.g_ema([w1, w2],
-                                         input_is_stylecode=True,
-                                         mix_space="w",
-                                         mask=mask)[0]
-
-            recon_img_src, _ = self.g_ema(w1, input_is_stylecode=True)
-            recon_img_ref, _ = self.g_ema(w2, input_is_stylecode=True)
-
-            return mixed_image, recon_img_src, recon_img_ref
+def generate_reconst_imgs(model, loader, save_image_dir):
+    """
+    Generate reconstructed imgs from g_ema
+    """
+    for i, (real_img, mask) in enumerate(tqdm(loader)):
+        real_img = real_img.to(device)
+        recon_image = model(real_img, "reconstruction")
+        save_images([recon_image], [f"{save_image_dir}/{i}_recon.png"])
 
 
-transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True),
-])
-
-if __name__ == "__main__":
-
-    ckpt_path = "./expr/checkpoints/celeba_hq_256_8x8.pt"
-    lmdb_file = "data/celeba_hq/LMDB_train"  # input images in mdb file
-    num_samples_per_class = 500
-    batch = 1
-    num_workers = 0  # fixed 0
-
-    device = "cuda"
-
-    # Load model parameters
-    ckpt = torch.load(ckpt_path)
-    train_args = ckpt["train_args"]
-    model = Model().to(device)
-    model.g_ema.load_state_dict(ckpt["g_ema"])
-    model.e_ema.load_state_dict(ckpt["e_ema"])
-    model.eval()
-
-    # Get images dataset type
-    if 'LMDB_train' in lmdb_file:
-        dataset_type = 'train'
-    elif 'LMDB_test' in lmdb_file:
-        dataset_type = 'test'
-    elif 'LMDB_val' in lmdb_file:
-        dataset_type = 'val'
-    else:
-        raise ValueError("Unknown lmdb dataset type")
-
-    # Set output path
-    save_image_dir = f"expr/{MIXING_TYPE}/celeba_hq/{dataset_type}"
-
+def generate_local_edited_imgs(model, loader, save_image_dir):
+    """
+    Generate local edited imgs and their editing masks
+    """
     for local_editing_part in LOCAL_EDITING_PART_CHOICES:
-
-        if train_args.dataset == "afhq":
-
-            for kind in [
-                    "output_diff_mask",  # diff between reconstructed src. and output binary mask
-                    "editing_mask",  # binary mask for local editing region
-                    "reference_reconstruction",  # reconstructed ref. img
-                    "source_reconstruction",  # reconstructed src. img         
-                    "synthesized_image"  # local edited img
-            ]:
-                os.makedirs(os.path.join(save_image_dir, kind), exist_ok=True)
-
-        else:  # celeba_hq
-
-            save_image_child_dir = os.path.join(save_image_dir,
-                                                local_editing_part)
-            for kind in [
-                    "output_diff_mask",  # diff between reconstructed src. and output binary mask
-                    "editing_mask",  # binary mask for local editing region
-                    "reference_reconstruction",  # reconstructed ref. img
-                    "source_reconstruction",  # reconstructed src. img         
-                    "synthesized_image"  # local edited img
-            ]:
-                os.makedirs(os.path.join(save_image_child_dir, kind),
-                            exist_ok=True)
-            mask_path_base = f"data/{train_args.dataset}/local_editing"
-
-        # Prepare Dataset
-        if train_args.dataset == "celeba_hq":
-            assert "celeba_hq" in lmdb_file
-
-            # CelebA dataset contains an RGB img, and a classification mask pair
-            # parts_index represents the indices for each parts in the mask
-            dataset = GTMaskDataset(lmdb_file, transform, train_args.size)
-
-            parts_index = {
-                "background": [0],
-                "skin": [1],
-                "eyebrow": [6, 7],
-                "eye": [3, 4, 5],
-                "ear": [8, 9, 15],
-                "nose": [2],
-                "lip": [10, 11, 12],
-                "neck": [16, 17],
-                "cloth": [18],
-                "hair": [13, 14],
-            }
-
-        # afhq, coarse(half-and-half) masks
-        else:
-            assert "afhq" in lmdb_file and "afhq" == train_args.dataset
-            dataset = MultiResolutionDataset(lmdb_file, transform,
-                                             train_args.size)
-
-        # Prepare Dataloader
-        n_sample = len(dataset)
-        sampler = data_sampler(dataset, shuffle=False)
-
-        loader = data.DataLoader(
-            dataset,
-            batch,
-            sampler=sampler,
-            num_workers=num_workers,
-            pin_memory=True,
-            drop_last=False,
-        )
-
-        # generated images should match with n sample
-        if n_sample % batch == 0:
-            assert len(loader) == n_sample // batch
-        else:
-            assert len(loader) == n_sample // batch + 1
+        save_image_child_dir = os.path.join(save_image_dir, local_editing_part)
+        for kind in [
+                "editing_mask",  # binary mask for local editing region
+                "synthesized_image"  # local edited img
+        ]:
+            os.makedirs(os.path.join(save_image_child_dir, kind),
+                        exist_ok=True)
 
         # Local editing
         # We don't want to hand pick the pairing based on similarity, because
@@ -238,7 +130,6 @@ if __name__ == "__main__":
         indices1, indices2 = get_src_ref_pair(n_sample, num_samples_per_class)
 
         with torch.no_grad():
-
             for loop_i, (index1,
                          index2) in tqdm(enumerate(zip(indices1, indices2)),
                                          total=len(indices1)):
@@ -250,84 +141,132 @@ if __name__ == "__main__":
                 ref_img = ref_img.to(device)
                 mask1_logit = mask1_logit.to(device)
                 mask2_logit = mask2_logit.to(device)
-                
+
                 src_img, ref_img = src_img[None, :], ref_img[None, :]
                 latents1, latents2 = model(src_img, "projection").squeeze(0), \
-                                     model(ref_img, "projection").squeeze(0)
+                                    model(ref_img, "projection").squeeze(0)
 
-                if train_args.dataset == "celeba_hq":
+                mask1 = -torch.ones(mask1_logit.shape).to(
+                    device)  # initialize with -1
+                mask2 = -torch.ones(mask2_logit.shape).to(
+                    device)  # initialize with -1
 
-                    mask1 = -torch.ones(mask1_logit.shape).to(
-                        device)  # initialize with -1
-                    mask2 = -torch.ones(mask2_logit.shape).to(
-                        device)  # initialize with -1
+                for label_i in PARTS_INDEX[local_editing_part]:
+                    mask1[(mask1_logit == label_i) == True] = 1
+                    mask2[(mask2_logit == label_i) == True] = 1
 
-                    for label_i in parts_index[local_editing_part]:
-                        mask1[(mask1_logit == label_i) == True] = 1
-                        mask2[(mask2_logit == label_i) == True] = 1
-
-                    mask = mask1 + mask2
-                    mask = mask.float()
-                elif train_args.dataset == "afhq":
-                    mask = masks[index1]
+                mask = mask1 + mask2
+                mask = mask.float()
 
                 mixed_image, recon_img_src, recon_img_ref = model(
-                    (latents1, latents2, mask),
-                    "local_editing",
-                )
+                    (latents1, latents2, mask), "local_editing")
 
-                save_images(
-                    [
-                        mixed_image[0],
-                        recon_img_src[0],
-                        recon_img_ref[0],
-                    ],
-                    [
-                        f"{save_image_child_dir}/synthesized_image/{index1}.png",
-                        f"{save_image_child_dir}/source_reconstruction/{index1}.png",
-                        f"{save_image_child_dir}/reference_reconstruction/{index1}.png",
-                    ],
-                )
-
+                # Convert to binary mask
                 mask[mask < -1] = -1
                 mask[mask > -1] = 1
 
-                # Generate output difference binary mask (weak)
-                output_binary_mask = torch.abs(mixed_image[0] -
-                                               recon_img_src[0])
-                output_binary_mask[torch.where(
-                    output_binary_mask > torch.max(output_binary_mask) *
-                    THRESHOLD)] = 1
-                output_binary_mask[torch.where(output_binary_mask != 1)] = 0
-                output_binary_mask = torch.all(output_binary_mask.type(
-                    torch.uint8),
-                                               axis=0).float()
+                save_images(
+                    [
+                        mask,
+                        mixed_image[0],
+                    ],
+                    [
+                        f"{save_image_child_dir}/editing_mask/{loop_i}.png",
+                        f"{save_image_child_dir}/synthesized_image/{loop_i}.png"
+                    ],
+                )
 
-                output_binary_mask[output_binary_mask < 1] = -1
-                output_binary_mask[output_binary_mask > 0] = 1
+                save_src_ref_pair(
+                    os.path.join(save_image_child_dir, 'src_ref_pair.txt'),
+                    indices1, indices2)
 
-                # #################### View ####################
-                # import matplotlib.pyplot as plt
-                # plt.imshow(output_binary_mask.cpu(), cmap='gray')
 
-                # import matplotlib.pyplot as plt
-                # plt.imshow(np.rot90(np.swapaxes(real_img[2, :].cpu(), 0, -1), 3))
-                # plt.imshow(mask[2, :].cpu(), cmap='gray')
+if __name__ == "__main__":
 
-                # for i, real_img in enumerate(dataset):
-                #     real_img, mask = real_img
-                #     fig, (ax1, ax2) = plt.subplots(1, 2)
-                #     ax1.imshow(np.rot90(np.swapaxes(real_img.cpu(), 0, -1), 3))
-                #     ax2.imshow(mask.cpu(), cmap='gray')
-                #     plt.show()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--ckpt",
+                        type=str,
+                        default="./expr/checkpoints/celeba_hq_256_8x8.pt")
+    parser.add_argument("--lmdb_file",
+                        type=str,
+                        default="data/celeba_hq/LMDB_test")
+    parser.add_argument("--num_samples_per_class", type=int, default=100)
+    parser.add_argument("--reconstructed_img_path",
+                        type=str,
+                        default="./dataset/reconstructed_imgs")  # None
+    parser.add_argument("--output_dataset_path",
+                        type=str,
+                        default="./dataset/local_edited_imgs")  # None
 
-                save_images([output_binary_mask, mask], [
-                    f"{save_image_child_dir}/output_diff_mask/{index1}.png",
-                    f"{save_image_child_dir}/editing_mask/{index1}.png",
-                ])
+    args = parser.parse_args()
 
-        # clean up torch tensors
-        del dataset
-        del loader
-        del mask
-        torch.cuda.empty_cache()
+    ckpt_path = args.ckpt
+    lmdb_file = args.lmdb_file  # input images in mdb file
+    num_samples_per_class = args.num_samples_per_class
+    batch = 1
+    num_workers = 0  # fixed 0
+
+    device = "cuda"
+
+    # Load model parameters
+    model = load_model(ckpt_path, device=device)
+    train_args = model.train_args
+
+    # Get images dataset type
+    if 'LMDB_train' in lmdb_file:
+        dataset_type = 'train'
+    elif 'LMDB_test' in lmdb_file:
+        dataset_type = 'test'
+    elif 'LMDB_val' in lmdb_file:
+        dataset_type = 'val'
+    else:
+        raise ValueError("Unknown lmdb dataset type")
+
+    # Get dataset and loader
+    # Prepare Dataset
+    if train_args.dataset == "celeba_hq":
+        assert "celeba_hq" in lmdb_file
+
+        # CelebA dataset contains an RGB img, and a classification mask pair
+        dataset = GTMaskDataset(lmdb_file, transform, train_args.size)
+
+    # afhq, coarse(half-and-half) masks
+    else:
+        assert "afhq" in lmdb_file and "afhq" == train_args.dataset
+        dataset = MultiResolutionDataset(lmdb_file, transform, train_args.size)
+
+    # Prepare Dataloader
+    n_sample = len(dataset)
+    sampler = data_sampler(dataset, shuffle=False)
+
+    loader = data.DataLoader(
+        dataset,
+        batch,
+        sampler=sampler,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=False,
+    )
+
+    # generated images should match with n sample
+    if n_sample % batch == 0:
+        assert len(loader) == n_sample // batch
+    else:
+        assert len(loader) == n_sample // batch + 1
+
+    # Generate generator-reconstructed imgs
+    if args.reconstructed_img_path is not None:
+        print("Generate StyleMapGAN reconstructed dataset")
+        save_image_dir = os.path.join(args.reconstructed_img_path,
+                                      dataset_type)
+        os.makedirs(save_image_dir, exist_ok=True)
+
+        generate_reconst_imgs(model, loader, save_image_dir)
+
+    # Generate local edited dataset
+    if args.output_dataset_path is not None:
+        print("Generate local edited dataset")
+        save_image_dir = os.path.join(args.output_dataset_path, dataset_type)
+        os.makedirs(save_image_dir, exist_ok=True)
+
+        generate_local_edited_imgs(model, loader, save_image_dir)

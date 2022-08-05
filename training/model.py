@@ -1156,3 +1156,79 @@ class Generator(nn.Module):
                 return image, stylecode
             else:
                 return image, None
+
+
+class Model(nn.Module):
+
+    def __init__(self, train_args, device="cuda"):
+        super(Model, self).__init__()
+        self.train_args = train_args
+        self.g_ema = Generator(
+            train_args.size,
+            train_args.mapping_layer_num,
+            train_args.latent_channel_size,
+            train_args.latent_spatial_size,
+            lr_mul=train_args.lr_mul,
+            channel_multiplier=train_args.channel_multiplier,
+            normalize_mode=train_args.normalize_mode,
+            small_generator=train_args.small_generator,
+        )
+        self.e_ema = Encoder(
+            train_args.size,
+            train_args.latent_channel_size,
+            train_args.latent_spatial_size,
+            channel_multiplier=train_args.channel_multiplier,
+        )
+
+    def forward(self, input, mode):
+
+        if mode == "projection":
+            # project raw input imgs to latents
+            fake_stylecode = self.e_ema(input)
+            return fake_stylecode
+
+        elif mode == "reconstruction":
+            # g_ema(latents)
+            fake_stylecode = self.e_ema(input)
+            fake_img, _ = self.g_ema(fake_stylecode, input_is_stylecode=True)
+            return fake_img
+
+        elif mode == "local_editing":
+            # the input for local_editing mode w1 and w2 are fake_stylecode 
+            # (latents) from raw imgs after e_ema()
+            w1, w2, mask = input
+            w1, w2, mask = w1.unsqueeze(0), w2.unsqueeze(0), mask.unsqueeze(0)
+
+            if self.train_args.dataset == "celeba_hq":
+                mixed_image = self.g_ema(
+                    [w1, w2],
+                    input_is_stylecode=True,
+                    mix_space="w_plus",
+                    mask=mask,
+                )[0]
+
+            elif self.train_args.dataset == "afhq":
+                mixed_image = self.g_ema([w1, w2],
+                                         input_is_stylecode=True,
+                                         mix_space="w",
+                                         mask=mask)[0]
+
+            recon_img_src, _ = self.g_ema(w1, input_is_stylecode=True)
+            recon_img_ref, _ = self.g_ema(w2, input_is_stylecode=True)
+
+            return mixed_image, recon_img_src, recon_img_ref
+
+
+def load_model(ckpt_path, device):
+    """
+    Load StyleMapGAN model and parameters from ckpt, return model
+    """
+    ckpt = torch.load(ckpt_path)
+    device = "cuda"
+    train_args = ckpt["train_args"]
+    model = Model(train_args, device).to(device)
+    model.g_ema.load_state_dict(ckpt["g_ema"])
+    model.e_ema.load_state_dict(ckpt["e_ema"])
+    model.eval()
+
+    return model
