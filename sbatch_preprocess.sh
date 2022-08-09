@@ -8,6 +8,6 @@
 
 source ~/scratch/StyleMapGAN/env/StyleMapGAN/bin/activate
 # python preprocessor/prepare_data.py --out data/celeba_hq/LMDB_train --size "256,1024" data/celeba_hq/raw_images/train
-python preprocessor/prepare_data.py --out data/celeba_hq/LMDB_val --size "256,1024" data/celeba_hq/raw_images/val
+python preprocessor/prepare_data.py --out "data/celeba_hq/LMDB" --size "256,1024" data/celeba_hq/raw_images
 
 echo "End"

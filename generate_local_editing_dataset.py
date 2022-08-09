@@ -108,9 +108,18 @@ def generate_reconst_imgs(model, loader, save_image_dir):
         save_images([recon_image], [f"{save_image_dir}/{i}_recon.png"])
 
 
-def generate_local_edited_imgs(model, loader, save_image_dir):
+def generate_local_edited_imgs(model, loader, save_image_dir,
+                               num_fake_samples_per_class, fake_real_split):
     """
-    Generate local edited imgs and their editing masks
+    Generate local edited imgs (fakes) and their editing masks, along with a lookup table 
+    file that indicates indices of src_ref pairs of fakes and unused reals
+
+    Fakes: Generated from random pick pairs of src and ref in 0:(total_samples*fake_real_split)
+    Reals: Unused re-constructed imgs in (total_samples*fake_real_split):-1
+
+    Note:
+        For each local edited parts, the selection of src_ref pairs is re-generated randomly from 
+        the same fakes pool
     """
     for local_editing_part in LOCAL_EDITING_PART_CHOICES:
         save_image_child_dir = os.path.join(save_image_dir, local_editing_part)
@@ -126,8 +135,12 @@ def generate_local_edited_imgs(model, loader, save_image_dir):
         # we want the prediction model to be trained on a mixture of good and
         # bad samples
 
-        # Randomly pick unique pairs of src and ref
-        indices1, indices2 = get_src_ref_pair(n_sample, num_samples_per_class)
+        # Fakes are generated via random pick pairs of src and ref in 0:fakes_pool_size
+        # Reals are unused re-constructed imgs in fakes_pool_size:-1
+        fakes_pool_size = int(n_sample * fake_real_split)
+        reals_pool_size = n_sample - fakes_pool_size
+        indices1, indices2 = get_src_ref_pair(fakes_pool_size,
+                                              num_fake_samples_per_class)
 
         with torch.no_grad():
             for loop_i, (index1,
@@ -187,13 +200,13 @@ if __name__ == "__main__":
     parser.add_argument("--ckpt",
                         type=str,
                         default="./expr/checkpoints/celeba_hq_256_8x8.pt")
-    parser.add_argument("--lmdb_file",
-                        type=str,
-                        default="data/celeba_hq/LMDB_test")
-    parser.add_argument("--num_samples_per_class", type=int, default=100)
-    parser.add_argument("--reconstructed_img_path",
-                        type=str,
-                        default="./dataset/reconstructed_imgs")  # None
+    parser.add_argument("--lmdb_file", type=str, default="data/celeba_hq/LMDB")
+    parser.add_argument("--num_fake_samples_per_class", type=int, default=5)
+    parser.add_argument("--fake_real_split", type=float, default=0.5)
+    # parser.add_argument("--reconstructed_img_path",
+    #                     type=str,
+    #                     default="./dataset/reconstructed_imgs")
+    parser.add_argument("--reconstructed_img_path", type=str, default=None)
     parser.add_argument("--output_dataset_path",
                         type=str,
                         default="./dataset/local_edited_imgs")  # None
@@ -202,7 +215,8 @@ if __name__ == "__main__":
 
     ckpt_path = args.ckpt
     lmdb_file = args.lmdb_file  # input images in mdb file
-    num_samples_per_class = args.num_samples_per_class
+    num_fake_samples_per_class = args.num_fake_samples_per_class
+    fake_real_split = args.fake_real_split
     batch = 1
     num_workers = 0  # fixed 0
 
@@ -211,29 +225,11 @@ if __name__ == "__main__":
     # Load model parameters
     model = load_model(ckpt_path, device=device)
     train_args = model.train_args
+    assert (train_args.dataset == "celeba_hq"
+            ), "train_args.dataset must be celeba_hq"
 
-    # Get images dataset type
-    if 'LMDB_train' in lmdb_file:
-        dataset_type = 'train'
-    elif 'LMDB_test' in lmdb_file:
-        dataset_type = 'test'
-    elif 'LMDB_val' in lmdb_file:
-        dataset_type = 'val'
-    else:
-        raise ValueError("Unknown lmdb dataset type")
-
-    # Get dataset and loader
-    # Prepare Dataset
-    if train_args.dataset == "celeba_hq":
-        assert "celeba_hq" in lmdb_file
-
-        # CelebA dataset contains an RGB img, and a classification mask pair
-        dataset = GTMaskDataset(lmdb_file, transform, train_args.size)
-
-    # afhq, coarse(half-and-half) masks
-    else:
-        assert "afhq" in lmdb_file and "afhq" == train_args.dataset
-        dataset = MultiResolutionDataset(lmdb_file, transform, train_args.size)
+    # CelebA dataset contains an RGB img, and a classification mask pair
+    dataset = GTMaskDataset(lmdb_file, transform, train_args.size)
 
     # Prepare Dataloader
     n_sample = len(dataset)
@@ -257,16 +253,14 @@ if __name__ == "__main__":
     # Generate generator-reconstructed imgs
     if args.reconstructed_img_path is not None:
         print("Generate StyleMapGAN reconstructed dataset")
-        save_image_dir = os.path.join(args.reconstructed_img_path,
-                                      dataset_type)
-        os.makedirs(save_image_dir, exist_ok=True)
+        os.makedirs(args.reconstructed_img_path, exist_ok=True)
 
-        generate_reconst_imgs(model, loader, save_image_dir)
+        generate_reconst_imgs(model, loader, args.reconstructed_img_path)
 
     # Generate local edited dataset
     if args.output_dataset_path is not None:
         print("Generate local edited dataset")
-        save_image_dir = os.path.join(args.output_dataset_path, dataset_type)
-        os.makedirs(save_image_dir, exist_ok=True)
+        os.makedirs(args.output_dataset_path, exist_ok=True)
 
-        generate_local_edited_imgs(model, loader, save_image_dir)
+        generate_local_edited_imgs(model, loader, args.output_dataset_path,
+                                   num_fake_samples_per_class, fake_real_split)
