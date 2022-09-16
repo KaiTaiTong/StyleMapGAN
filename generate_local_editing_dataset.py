@@ -108,6 +108,16 @@ def generate_reconst_imgs(model, loader, save_image_dir):
         save_images([recon_image], [f"{save_image_dir}/{i}_recon.png"])
 
 
+def save_label_mask(loader, save_image_dir):
+    """
+    Save label masks for the recons imgs
+    """
+    # /dataset/reconstructed_imgs
+    for i, (real_img, mask) in enumerate(tqdm(loader)):
+        save_images([mask.float()], [f"{save_image_dir}/{i}_mask.png"],
+                    range=None)
+
+
 def generate_local_edited_imgs(model, loader, save_image_dir,
                                num_fake_samples_per_class, fake_real_split):
     """
@@ -206,10 +216,20 @@ if __name__ == "__main__":
     # parser.add_argument("--reconstructed_img_path",
     #                     type=str,
     #                     default="./dataset/reconstructed_imgs")
+    parser.add_argument(
+        "--label_mask_path",
+        type=str,
+        default=
+        "/project/6003167/alantkt/datasets/local_editing_dataset/segmentation_imgs"
+    )
+    # parser.add_argument("--output_dataset_path",
+    #                     type=str,
+    #                     default="./dataset/local_edited_imgs")  # None
+
+    # ========= Uncomment this to remove generation tasks =========
     parser.add_argument("--reconstructed_img_path", type=str, default=None)
-    parser.add_argument("--output_dataset_path",
-                        type=str,
-                        default="./dataset/local_edited_imgs")  # None
+    # parser.add_argument("--label_mask_path", type=str, default=None)
+    parser.add_argument("--output_dataset_path", type=str, default=None)
 
     args = parser.parse_args()
 
@@ -256,6 +276,13 @@ if __name__ == "__main__":
         os.makedirs(args.reconstructed_img_path, exist_ok=True)
 
         generate_reconst_imgs(model, loader, args.reconstructed_img_path)
+
+    # Get and save segmantation masks for reconstructed dataset
+    if args.label_mask_path is not None:
+        print("Save segmentation masks for reconstructed dataset")
+        os.makedirs(args.label_mask_path, exist_ok=True)
+
+        save_label_mask(loader, args.label_mask_path)
 
     # Generate local edited dataset
     if args.output_dataset_path is not None:
