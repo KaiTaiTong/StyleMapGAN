@@ -18,6 +18,7 @@ import random
 import re, os
 from torchvision import transforms
 import torch
+import pandas as pd
 
 
 class MultiResolutionDataset(Dataset):
@@ -93,6 +94,12 @@ class GTMaskDataset(Dataset):
         self.resolution = resolution
         self.transform = transform
 
+        # Load annotation txt file
+        CelebA_HQ_annotation_path = f"{dataset_folder}/CelebAMask-HQ-attribute-anno.txt"
+        CelebA_HQ_annotation = pd.read_csv(CelebA_HQ_annotation_path,
+                                           sep=" ",
+                                           header=1)
+
         # convert filename to celeba_hq index
         CelebA_HQ_to_CelebA = (
             f"{dataset_folder}/local_editing/CelebA-HQ-to-CelebA-mapping.txt")
@@ -119,12 +126,16 @@ class GTMaskDataset(Dataset):
                 CelebA_to_CelebA_HQ_dict[orig_file] = idx
 
         self.mask = []
+        self.annotation = []
 
         # LMDB file is generated in alphabetical order of the imgs file, thus we need to
         # sort the listdir as well to make mask match the input imgs
         for filename in sorted(os.listdir(original_path)):
-            CelebA_HQ_filename = CelebA_to_CelebA_HQ_dict[filename]
-            CelebA_HQ_filename = CelebA_HQ_filename + ".png"
+            CelebA_HQ_file_idx = CelebA_to_CelebA_HQ_dict[filename]
+            CelebA_HQ_filename = CelebA_HQ_file_idx + ".png"
+
+            self.annotation.append(
+                CelebA_HQ_annotation.iloc[int(CelebA_HQ_file_idx)].to_dict())
             self.mask.append(os.path.join(mask_label_path, CelebA_HQ_filename))
 
     def __len__(self):
@@ -148,8 +159,10 @@ class GTMaskDataset(Dataset):
         mask *= 255
         mask = mask.long()
 
+        annotation = self.annotation[index]
+
         assert mask.shape == (self.resolution, self.resolution)
-        return img, mask
+        return img, mask, annotation
 
 
 class DataSetFromDir(Dataset):

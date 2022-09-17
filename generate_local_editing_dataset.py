@@ -14,6 +14,7 @@ from training.dataset import MultiResolutionDataset, GTMaskDataset
 import matplotlib.pyplot as plt
 import warnings
 import argparse
+from PIL import Image
 
 LOCAL_EDITING_PART_CHOICES = [
     "nose",
@@ -102,7 +103,7 @@ def generate_reconst_imgs(model, loader, save_image_dir):
     """
     Generate reconstructed imgs from g_ema
     """
-    for i, (real_img, mask) in enumerate(tqdm(loader)):
+    for i, (real_img, mask, _) in enumerate(tqdm(loader)):
         real_img = real_img.to(device)
         recon_image = model(real_img, "reconstruction")
         save_images([recon_image], [f"{save_image_dir}/{i}_recon.png"])
@@ -112,10 +113,23 @@ def save_label_mask(loader, save_image_dir):
     """
     Save label masks for the recons imgs
     """
-    # /dataset/reconstructed_imgs
-    for i, (real_img, mask) in enumerate(tqdm(loader)):
-        save_images([mask.float()], [f"{save_image_dir}/{i}_mask.png"],
-                    range=None)
+    for i, (real_img, mask, _) in enumerate(tqdm(loader)):
+        mask = mask.to(device)
+        im = Image.fromarray(mask.to('cpu', torch.uint8).numpy().squeeze())
+        im.save(f"{save_image_dir}/{i}_mask.png")
+
+
+def generate_gender_table(loader, save_table_dir):
+    """
+    Generate gender look up table for reconstructed imgs. Male: 0; Female: 1 
+    """
+    gender_table = {}
+    for i, (_, _, annotation) in enumerate(tqdm(loader)):
+        gender_table[i] = 1 if annotation['Male'] == -1 else 0
+
+    with open(os.path.join(save_table_dir, 'gender_table.pkl'),
+              'wb') as handle:
+        pickle.dump(gender_table, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
 
 def generate_local_edited_imgs(model, loader, save_image_dir,
@@ -157,8 +171,8 @@ def generate_local_edited_imgs(model, loader, save_image_dir,
                          index2) in tqdm(enumerate(zip(indices1, indices2)),
                                          total=len(indices1)):
 
-                src_img, mask1_logit = loader.dataset[index1]
-                ref_img, mask2_logit = loader.dataset[index2]
+                src_img, mask1_logit, _ = loader.dataset[index1]
+                ref_img, mask2_logit, _ = loader.dataset[index2]
 
                 src_img = src_img.to(device)
                 ref_img = ref_img.to(device)
@@ -216,20 +230,24 @@ if __name__ == "__main__":
     # parser.add_argument("--reconstructed_img_path",
     #                     type=str,
     #                     default="./dataset/reconstructed_imgs")
-    parser.add_argument(
-        "--label_mask_path",
-        type=str,
-        default=
-        "/project/6003167/alantkt/datasets/local_editing_dataset/segmentation_imgs"
-    )
+    # parser.add_argument(
+    #     "--label_mask_path",
+    #     type=str,
+    #     default=
+    #     "/project/6003167/alantkt/datasets/local_editing_dataset/segmentation_imgs"
+    # )
     # parser.add_argument("--output_dataset_path",
     #                     type=str,
     #                     default="./dataset/local_edited_imgs")  # None
-
+    parser.add_argument(
+        "--gender_path",
+        type=str,
+        default="/project/6003167/alantkt/datasets/local_editing_dataset/")
     # ========= Uncomment this to remove generation tasks =========
     parser.add_argument("--reconstructed_img_path", type=str, default=None)
-    # parser.add_argument("--label_mask_path", type=str, default=None)
+    parser.add_argument("--label_mask_path", type=str, default=None)
     parser.add_argument("--output_dataset_path", type=str, default=None)
+    # parser.add_argument("--gender_path", type=str, default=None)
 
     args = parser.parse_args()
 
@@ -291,3 +309,9 @@ if __name__ == "__main__":
 
         generate_local_edited_imgs(model, loader, args.output_dataset_path,
                                    num_fake_samples_per_class, fake_real_split)
+
+    # Generate gender lookup table
+    if args.gender_path is not None:
+        print("Generate gender path")
+
+        generate_gender_table(loader, args.gender_path)

@@ -434,7 +434,7 @@ if __name__ == "__main__":
                 canvas.save(png)
 
         elif args.mixing_type == "reconstruction":
-            for i, real_img in enumerate(tqdm(loader, mininterval=1)):
+            for i, real_img, _ in enumerate(tqdm(loader, mininterval=1)):
                 real_img = real_img.to(device)
                 recon_image = model(real_img, "reconstruction")
 
@@ -539,7 +539,7 @@ if __name__ == "__main__":
                 )
 
         else:
-            for i, real_img in enumerate(tqdm(loader, mininterval=1)):
+            for i, real_img, _ in enumerate(tqdm(loader, mininterval=1)):
                 if (args.mixing_type == "local_editing") and (
                     dataset_name == "celeba_hq"
                 ):
