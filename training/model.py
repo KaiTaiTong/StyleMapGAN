@@ -18,7 +18,8 @@ from torch import nn
 from torch.nn import functional as F
 from torch.autograd import Function
 
-from training.op import FusedLeakyReLU, fused_leaky_relu, upfirdn2d
+# from training.op import FusedLeakyReLU, fused_leaky_relu, upfirdn2d
+from .op import FusedLeakyReLU, fused_leaky_relu, upfirdn2d
 
 import copy
 
