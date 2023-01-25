@@ -29,9 +29,10 @@ for img_index in tqdm(range(500)):
         plt.axis('off')
 
         plt.savefig(
-            f"./expr/local_editing/celeba_hq/nose/binary_mask_1_7/{img_index}.png")
+            f"./expr/local_editing/celeba_hq/nose/binary_mask_1_7/{img_index}.png"
+        )
 
     except FileNotFoundError:
         continue
 
-python preprocessor/prepare_data.py --out data/celeba_hq/LMDB_train --size "256,1024" data/celeba_hq/raw_images/train
+# python preprocessor/prepare_data.py --out data/celeba_hq/LMDB_train --size "256,1024" data/celeba_hq/raw_images/train
