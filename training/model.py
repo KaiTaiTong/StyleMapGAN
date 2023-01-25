@@ -33,11 +33,13 @@ def _repeat_tuple(t, n):
 
 
 class PixelNorm(nn.Module):
+
     def __init__(self):
         super().__init__()
 
     def forward(self, input):
-        return input * torch.rsqrt(torch.mean(input ** 2, dim=1, keepdim=True) + 1e-8)
+        return input * torch.rsqrt(
+            torch.mean(input**2, dim=1, keepdim=True) + 1e-8)
 
 
 def make_kernel(k):
@@ -52,6 +54,7 @@ def make_kernel(k):
 
 
 class ConstantInput(nn.Module):
+
     def __init__(self, channel, size=4):
         super().__init__()
 
@@ -64,6 +67,7 @@ class ConstantInput(nn.Module):
 
 
 class ScaledLeakyReLU(nn.Module):
+
     def __init__(self, negative_slope=0.2):
         super().__init__()
 
@@ -76,11 +80,12 @@ class ScaledLeakyReLU(nn.Module):
 
 
 class Upsample(nn.Module):
+
     def __init__(self, kernel, factor=2):
         super().__init__()
 
         self.factor = factor
-        kernel = make_kernel(kernel) * (factor ** 2)
+        kernel = make_kernel(kernel) * (factor**2)
         self.register_buffer("kernel", kernel)
 
         p = kernel.shape[0] - factor
@@ -91,19 +96,24 @@ class Upsample(nn.Module):
         self.pad = (pad0, pad1)
 
     def forward(self, input):
-        out = upfirdn2d(input, self.kernel, up=self.factor, down=1, pad=self.pad)
+        out = upfirdn2d(input,
+                        self.kernel,
+                        up=self.factor,
+                        down=1,
+                        pad=self.pad)
 
         return out
 
 
 class Blur(nn.Module):
+
     def __init__(self, kernel, pad, upsample_factor=1):
         super().__init__()
 
         kernel = make_kernel(kernel)
 
         if upsample_factor > 1:
-            kernel = kernel * (upsample_factor ** 2)
+            kernel = kernel * (upsample_factor**2)
 
         self.register_buffer("kernel", kernel)
 
@@ -116,9 +126,14 @@ class Blur(nn.Module):
 
 
 class EqualLinear(nn.Module):
-    def __init__(
-        self, in_dim, out_dim, bias=True, bias_init=0, lr_mul=1, activation=None
-    ):
+
+    def __init__(self,
+                 in_dim,
+                 out_dim,
+                 bias=True,
+                 bias_init=0,
+                 lr_mul=1,
+                 activation=None):
         super().__init__()
 
         self.weight = nn.Parameter(torch.randn(out_dim, in_dim).div_(lr_mul))
@@ -140,9 +155,9 @@ class EqualLinear(nn.Module):
             out = fused_leaky_relu(out, self.bias * self.lr_mul)
 
         else:
-            out = F.linear(
-                input, self.weight * self.scale, bias=self.bias * self.lr_mul
-            )
+            out = F.linear(input,
+                           self.weight * self.scale,
+                           bias=self.bias * self.lr_mul)
 
         return out
 
@@ -153,6 +168,7 @@ class EqualLinear(nn.Module):
 
 
 class EqualConv2d(nn.Module):
+
     def __init__(
         self,
         in_channel,
@@ -172,9 +188,9 @@ class EqualConv2d(nn.Module):
         self.kernel_size = kernel_size
 
         self.weight = nn.Parameter(
-            torch.randn(out_channel, in_channel, kernel_size, kernel_size).div_(lr_mul)
-        )
-        self.scale = 1 / math.sqrt(in_channel * kernel_size ** 2) * lr_mul
+            torch.randn(out_channel, in_channel, kernel_size,
+                        kernel_size).div_(lr_mul))
+        self.scale = 1 / math.sqrt(in_channel * kernel_size**2) * lr_mul
 
         self.stride = stride
         self.padding = padding
@@ -214,9 +230,10 @@ class EqualConv2d(nn.Module):
             batch, in_channel, height, width = input.shape
             input_temp = input.view(1, batch * in_channel, height, width)
             weight = self.weight.unsqueeze(0).repeat(batch, 1, 1, 1, 1)
-            weight = weight.transpose(1, 2).reshape(
-                batch * in_channel, self.out_channel, self.kernel_size, self.kernel_size
-            )
+            weight = weight.transpose(1, 2).reshape(batch * in_channel,
+                                                    self.out_channel,
+                                                    self.kernel_size,
+                                                    self.kernel_size)
             out = F.conv_transpose2d(
                 input_temp,
                 weight * self.scale,
@@ -250,6 +267,7 @@ class EqualConv2d(nn.Module):
 
 
 class EqualConv1dGroup(nn.Module):  # 1d conv group
+
     def __init__(
         self,
         in_channel,
@@ -267,8 +285,7 @@ class EqualConv1dGroup(nn.Module):  # 1d conv group
         self.kernel_size = kernel_size
 
         self.weight = nn.Parameter(
-            torch.randn(out_channel, 1, kernel_size).div_(lr_mul)
-        )
+            torch.randn(out_channel, 1, kernel_size).div_(lr_mul))
         self.scale = (1 / math.sqrt(kernel_size)) * lr_mul
 
         if bias:
@@ -289,9 +306,10 @@ class EqualConv1dGroup(nn.Module):  # 1d conv group
         else:
             bias = None
 
-        out = F.conv1d(
-            input, self.weight * self.scale, bias=bias, groups=self.in_channel
-        )
+        out = F.conv1d(input,
+                       self.weight * self.scale,
+                       bias=bias,
+                       groups=self.in_channel)
 
         if self.activation:
             out = self.activation(out)
@@ -301,11 +319,11 @@ class EqualConv1dGroup(nn.Module):  # 1d conv group
     def __repr__(self):
         return (
             f"{self.__class__.__name__}({self.weight.shape[1]}, {self.weight.shape[0]},"
-            f" {self.weight.shape[2]})"
-        )
+            f" {self.weight.shape[2]})")
 
 
 class ConvLayer(nn.Sequential):
+
     def __init__(
         self,
         in_channel,
@@ -334,15 +352,15 @@ class ConvLayer(nn.Sequential):
                     bias=bias and not activate,
                     conv_transpose2d=True,
                     lr_mul=lr_mul,
-                )
-            )
+                ))
 
             factor = 2
             p = (len(blur_kernel) - factor) - (kernel_size - 1)
             pad0 = (p + 1) // 2 + factor - 1
             pad1 = p // 2 + 1
 
-            layers.append(Blur(blur_kernel, pad=(pad0, pad1), upsample_factor=factor))
+            layers.append(
+                Blur(blur_kernel, pad=(pad0, pad1), upsample_factor=factor))
 
         else:
 
@@ -369,8 +387,7 @@ class ConvLayer(nn.Sequential):
                     padding=self.padding,
                     stride=stride,
                     bias=bias and not activate,
-                )
-            )
+                ))
 
         if activate:
             if bias:
@@ -383,16 +400,22 @@ class ConvLayer(nn.Sequential):
 
 
 class ResBlock(nn.Module):
-    def __init__(
-        self, in_channel, out_channel, blur_kernel=[1, 3, 3, 1], return_features=False
-    ):
+
+    def __init__(self,
+                 in_channel,
+                 out_channel,
+                 blur_kernel=[1, 3, 3, 1],
+                 return_features=False):
         super().__init__()
 
         self.conv1 = ConvLayer(in_channel, in_channel, 3)
         self.conv2 = ConvLayer(in_channel, out_channel, 3, downsample=True)
-        self.skip = ConvLayer(
-            in_channel, out_channel, 1, downsample=True, activate=False, bias=False
-        )
+        self.skip = ConvLayer(in_channel,
+                              out_channel,
+                              1,
+                              downsample=True,
+                              activate=False,
+                              bias=False)
         self.return_features = return_features
 
     def forward(self, input):
@@ -409,6 +432,7 @@ class ResBlock(nn.Module):
 
 
 class Discriminator(nn.Module):
+
     def __init__(self, size, channel_multiplier=2, blur_kernel=[1, 3, 3, 1]):
         super().__init__()
 
@@ -431,7 +455,7 @@ class Discriminator(nn.Module):
         in_channel = channels[size]
 
         for i in range(log_size, 2, -1):
-            out_channel = channels[2 ** (i - 1)]
+            out_channel = channels[2**(i - 1)]
 
             convs.append(ResBlock(in_channel, out_channel, blur_kernel))
 
@@ -444,7 +468,9 @@ class Discriminator(nn.Module):
 
         self.final_conv = ConvLayer(in_channel + 1, channels[4], 3)
         self.final_linear = nn.Sequential(
-            EqualLinear(channels[4] * 4 * 4, channels[4], activation="fused_lrelu"),
+            EqualLinear(channels[4] * 4 * 4,
+                        channels[4],
+                        activation="fused_lrelu"),
             EqualLinear(channels[4], 1),
         )
 
@@ -453,9 +479,8 @@ class Discriminator(nn.Module):
 
         batch, channel, height, width = out.shape
         group = min(batch, self.stddev_group)
-        stddev = out.view(
-            group, -1, self.stddev_feat, channel // self.stddev_feat, height, width
-        )
+        stddev = out.view(group, -1, self.stddev_feat,
+                          channel // self.stddev_feat, height, width)
         stddev = torch.sqrt(stddev.var(0, unbiased=False) + 1e-8)
         stddev = stddev.mean([2, 3, 4], keepdims=True).squeeze(2)
         stddev = stddev.repeat(group, 1, height, width)
@@ -468,6 +493,7 @@ class Discriminator(nn.Module):
 
 
 class StyledConv(nn.Module):
+
     def __init__(
         self,
         in_channel,
@@ -505,6 +531,7 @@ class StyledConv(nn.Module):
 
 
 class ModulatedConv2d(nn.Sequential):
+
     def __init__(
         self,
         in_channel,
@@ -531,7 +558,9 @@ class ModulatedConv2d(nn.Sequential):
             pad0 = (p + 1) // 2 + factor - 1
             pad1 = p // 2 + 1
 
-            self.blur = Blur(blur_kernel, pad=(pad0, pad1), upsample_factor=factor)
+            self.blur = Blur(blur_kernel,
+                             pad=(pad0, pad1),
+                             upsample_factor=factor)
 
         if downsample:
             factor = 2
@@ -541,13 +570,12 @@ class ModulatedConv2d(nn.Sequential):
 
             self.blur = Blur(blur_kernel, pad=(pad0, pad1))
 
-        fan_in = in_channel * kernel_size ** 2
+        fan_in = in_channel * kernel_size**2
         self.scale = 1 / math.sqrt(fan_in)
         self.padding = kernel_size // 2
 
         self.weight = nn.Parameter(
-            torch.randn(1, out_channel, in_channel, kernel_size, kernel_size)
-        )
+            torch.randn(1, out_channel, in_channel, kernel_size, kernel_size))
 
         self.normalize_mode = normalize_mode
         if normalize_mode == "InstanceNorm2d":
@@ -580,8 +608,7 @@ class ModulatedConv2d(nn.Sequential):
     def __repr__(self):
         return (
             f"{self.__class__.__name__}({self.in_channel}, {self.out_channel}, {self.kernel_size}, "
-            f"upsample={self.upsample}, downsample={self.downsample})"
-        )
+            f"upsample={self.upsample}, downsample={self.downsample})")
 
     def forward(self, input, stylecode):
         assert stylecode is not None
@@ -600,9 +627,10 @@ class ModulatedConv2d(nn.Sequential):
         if self.normalize_mode in ["InstanceNorm2d", "BatchNorm2d"]:
             input = self.norm(input)
         elif self.normalize_mode == "LayerNorm":
-            input = nn.LayerNorm(input.shape[1:], elementwise_affine=False)(input)
+            input = nn.LayerNorm(input.shape[1:],
+                                 elementwise_affine=False)(input)
         elif self.normalize_mode == "GroupNorm":
-            input = nn.GroupNorm(2 ** 3, input.shape[1:], affine=False)(input)
+            input = nn.GroupNorm(2**3, input.shape[1:], affine=False)(input)
         elif self.normalize_mode == None:
             pass
         else:
@@ -610,19 +638,22 @@ class ModulatedConv2d(nn.Sequential):
 
         input = input * gamma + beta
 
-        weight = weight.view(
-            batch * self.out_channel, in_channel, self.kernel_size, self.kernel_size
-        )
+        weight = weight.view(batch * self.out_channel, in_channel,
+                             self.kernel_size, self.kernel_size)
 
         if self.upsample:
             input = input.view(1, batch * in_channel, height, width)
-            weight = weight.view(
-                batch, self.out_channel, in_channel, self.kernel_size, self.kernel_size
-            )
-            weight = weight.transpose(1, 2).reshape(
-                batch * in_channel, self.out_channel, self.kernel_size, self.kernel_size
-            )
-            out = F.conv_transpose2d(input, weight, padding=0, stride=2, groups=batch)
+            weight = weight.view(batch, self.out_channel, in_channel,
+                                 self.kernel_size, self.kernel_size)
+            weight = weight.transpose(1, 2).reshape(batch * in_channel,
+                                                    self.out_channel,
+                                                    self.kernel_size,
+                                                    self.kernel_size)
+            out = F.conv_transpose2d(input,
+                                     weight,
+                                     padding=0,
+                                     stride=2,
+                                     groups=batch)
             _, _, height, width = out.shape
             out = out.view(batch, self.out_channel, height, width)
             out = self.blur(out)
@@ -645,6 +676,7 @@ class ModulatedConv2d(nn.Sequential):
 
 
 class StyledResBlock(nn.Module):
+
     def __init__(
         self,
         in_channel,
@@ -712,9 +744,12 @@ class StyledResBlock(nn.Module):
                 normalize_mode=normalize_mode,
             )
 
-        self.skip = ConvLayer(
-            in_channel, out_channel, 1, upsample=True, activate=False, bias=False
-        )
+        self.skip = ConvLayer(in_channel,
+                              out_channel,
+                              1,
+                              upsample=True,
+                              activate=False,
+                              bias=False)
 
     def forward(self, input, stylecodes):
         out = self.conv1(input, stylecodes[0])
@@ -727,15 +762,19 @@ class StyledResBlock(nn.Module):
 
 
 class ToRGB(nn.Module):
+
     def __init__(self, in_channel, style_dim, upsample, blur_kernel):
         super().__init__()
 
         if upsample:
             self.upsample = Upsample(blur_kernel)
 
-        self.conv = ModulatedConv2d(
-            in_channel, 3, 1, style_dim, blur_kernel=blur_kernel, normalize_mode=None
-        )
+        self.conv = ModulatedConv2d(in_channel,
+                                    3,
+                                    1,
+                                    style_dim,
+                                    blur_kernel=blur_kernel,
+                                    normalize_mode=None)
 
         self.bias = nn.Parameter(torch.zeros(1, 3, 1, 1))
 
@@ -752,6 +791,7 @@ class ToRGB(nn.Module):
 
 
 class Encoder(nn.Module):
+
     def __init__(
         self,
         size,
@@ -786,11 +826,13 @@ class Encoder(nn.Module):
         end = int(math.log(latent_spatial_size, 2))
 
         for i in range(self.log_size, end, -1):
-            out_channel = channels[2 ** (i - 1)]
+            out_channel = channels[2**(i - 1)]
 
             self.convs.append(
-                ResBlock(in_channel, out_channel, blur_kernel, return_features=True)
-            )
+                ResBlock(in_channel,
+                         out_channel,
+                         blur_kernel,
+                         return_features=True))
 
             in_channel = out_channel
 
@@ -808,6 +850,7 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
+
     def __init__(
         self,
         size,
@@ -837,9 +880,8 @@ class Decoder(nn.Module):
 
         self.log_size = int(math.log(size, 2))
 
-        self.input = ConstantInput(
-            channels[latent_spatial_size], size=latent_spatial_size
-        )
+        self.input = ConstantInput(channels[latent_spatial_size],
+                                   size=latent_spatial_size)
 
         if small_generator:
             stylecode_dim = style_dim
@@ -856,27 +898,32 @@ class Decoder(nn.Module):
         )
         in_channel = channels[latent_spatial_size]
 
-        self.start_index = int(math.log(latent_spatial_size, 2)) + 1  # if 4x4 -> 3
+        self.start_index = int(math.log(latent_spatial_size,
+                                        2)) + 1  # if 4x4 -> 3
         self.convs = nn.ModuleList()
         self.convs_latent = nn.ModuleList()
 
         self.convs_latent.append(
-            ConvLayer(
-                style_dim, stylecode_dim, 3, bias=True, activate=True, lr_mul=lr_mul
-            )
-        )  # 4x4
+            ConvLayer(style_dim,
+                      stylecode_dim,
+                      3,
+                      bias=True,
+                      activate=True,
+                      lr_mul=lr_mul))  # 4x4
         self.convs_latent.append(
-            ConvLayer(
-                stylecode_dim, stylecode_dim, 3, bias=True, activate=True, lr_mul=lr_mul
-            )
-        )
+            ConvLayer(stylecode_dim,
+                      stylecode_dim,
+                      3,
+                      bias=True,
+                      activate=True,
+                      lr_mul=lr_mul))
 
         for i in range(self.start_index, self.log_size + 1):  # 8x8~ 128x128
             if small_generator:
                 stylecode_dim_prev, stylecode_dim_next = style_dim, style_dim
             else:
-                stylecode_dim_prev = channels[2 ** (i - 1)]
-                stylecode_dim_next = channels[2 ** i]
+                stylecode_dim_prev = channels[2**(i - 1)]
+                stylecode_dim_next = channels[2**i]
             self.convs_latent.append(
                 ConvLayer(
                     stylecode_dim_prev,
@@ -886,8 +933,7 @@ class Decoder(nn.Module):
                     bias=True,
                     activate=True,
                     lr_mul=lr_mul,
-                )
-            )
+                ))
             self.convs_latent.append(
                 ConvLayer(
                     stylecode_dim_next,
@@ -896,8 +942,7 @@ class Decoder(nn.Module):
                     bias=True,
                     activate=True,
                     lr_mul=lr_mul,
-                )
-            )
+                ))
 
         if small_generator:
             stylecode_dim = style_dim
@@ -905,7 +950,7 @@ class Decoder(nn.Module):
             stylecode_dim = None
 
         for i in range(self.start_index, self.log_size + 1):
-            out_channel = channels[2 ** i]
+            out_channel = channels[2**i]
             self.convs.append(
                 StyledResBlock(
                     in_channel,
@@ -913,8 +958,7 @@ class Decoder(nn.Module):
                     stylecode_dim,
                     blur_kernel,
                     normalize_mode=normalize_mode,
-                )
-            )
+                ))
 
             in_channel = out_channel
 
@@ -934,8 +978,7 @@ class Decoder(nn.Module):
         )
 
         self.num_stylecodes = self.log_size * 2 - 2 * (
-            self.start_index - 2
-        )  # the number of AdaIN layer(stylecodes)
+            self.start_index - 2)  # the number of AdaIN layer(stylecodes)
         assert len(self.convs) * 2 + 2 == self.num_stylecodes
 
         self.latent_spatial_size = latent_spatial_size
@@ -980,9 +1023,11 @@ class Decoder(nn.Module):
         elif mix_space == "w":  # mix stylemaps in W space
             _, _, H, W = style_code[0].shape
             ratio = self.size // H
-            mask_for_latent = nn.MaxPool2d(kernel_size=ratio, stride=ratio)(mask)
+            mask_for_latent = nn.MaxPool2d(kernel_size=ratio,
+                                           stride=ratio)(mask)
 
-            style_code = torch.where(mask_for_latent > -1, style_code[1], style_code[0])
+            style_code = torch.where(mask_for_latent > -1, style_code[1],
+                                     style_code[0])
             for i in range(self.num_stylecodes):
                 style_code = self.convs_latent[i](style_code)
                 style_codes.append(style_code)
@@ -1003,13 +1048,63 @@ class Decoder(nn.Module):
                 _, C, H, W = style_codes2[i].shape
                 ratio = self.size // H
                 # print(mask)
-                mask_for_latent = nn.MaxPool2d(kernel_size=ratio, stride=ratio)(mask)
-                mask_for_latent = mask_for_latent.unsqueeze(1).repeat(1, C, 1, 1)
-                style_codes2[i] = torch.where(
-                    mask_for_latent > -1, style_codes2[i], style_codes1[i]
-                )
+                mask_for_latent = nn.MaxPool2d(kernel_size=ratio,
+                                               stride=ratio)(mask)
+                mask_for_latent = mask_for_latent.unsqueeze(1).repeat(
+                    1, C, 1, 1)
+                style_codes2[i] = torch.where(mask_for_latent > -1,
+                                              style_codes2[i], style_codes1[i])
 
             style_codes = style_codes2
+
+        elif mix_space == "ssmr_w_plus":
+            # single source multi-reference
+            style_code_src = style_code[0]
+            style_code_ref_list = style_code[1]
+            mask_src_list = mask[0]
+            mask_ref_list = mask[1]
+            style_codes_src = []
+            style_codes_ref = []  # list of list
+            style_codes_output = []
+
+            # ssmr scheme: masking should be done to src style code for all ref
+            #              at each level in w+
+            for up_layer in self.convs_latent:
+                style_code_src = up_layer(style_code_src)
+                style_code_ref_list = [
+                    up_layer(style_code_ref)
+                    for style_code_ref in style_code_ref_list
+                ]
+                style_codes_src.append(style_code_src)
+                style_codes_ref.append(style_code_ref_list)
+
+            # Each level in w+
+            for i in range(0, len(style_codes_src)):
+                _, C, H, W = style_codes_src[i].shape
+                ratio = self.size // H
+                # print(mask)
+
+                style_code_ref_list = style_codes_ref[i]
+                for j, style_code_ref in enumerate(style_code_ref_list):
+
+                    # for 1st iter
+                    if j == 0:
+                        style_code_temp = style_codes_src[i]
+
+                    # re-generate masks
+                    mask_src_temp = mask_src_list[j] + mask_ref_list[j]
+                    mask_src_temp = mask_src_temp.float()
+
+                    mask_for_latent = nn.MaxPool2d(kernel_size=ratio,
+                                                   stride=ratio)(mask_src_temp)
+                    mask_for_latent = mask_for_latent.unsqueeze(1).repeat(
+                        1, C, 1, 1)
+                    style_code_temp = torch.where(mask_for_latent > -1,
+                                                  style_code_ref,
+                                                  style_code_temp)
+
+                style_codes_output.append(style_code_temp)
+            style_codes = style_codes_output
 
         elif mix_space == "demo":  # mix stylemaps in W+ space using masks
             image_masks, shift_values, interpolation_step = mask
@@ -1023,16 +1118,17 @@ class Decoder(nn.Module):
 
                 _, C, H, W = original_stylemap.shape
                 ratio = self.size // H
-                masks = nn.AvgPool2d(kernel_size=ratio, stride=ratio)(image_masks)
+                masks = nn.AvgPool2d(kernel_size=ratio,
+                                     stride=ratio)(image_masks)
 
                 p_xs, p_ys = shift_values
 
                 mask_moved = torch.empty_like(masks).copy_(masks)
                 for i in range(len(reference_stylemaps)):
                     p_y, p_x = int(p_ys[i] / ratio), int(p_xs[i] / ratio)
-                    mask_moved[i, 0] = torch.roll(
-                        mask_moved[i, 0], shifts=(p_y, p_x), dims=(0, 1)
-                    )
+                    mask_moved[i, 0] = torch.roll(mask_moved[i, 0],
+                                                  shifts=(p_y, p_x),
+                                                  dims=(0, 1))
 
                     if p_y >= 0:
                         mask_moved[i, 0, :p_y] = 0
@@ -1044,26 +1140,26 @@ class Decoder(nn.Module):
                     else:
                         mask_moved[i, 0, :, p_x:] = 0
 
-                    masks[i, 0] = torch.roll(
-                        mask_moved[i, 0], shifts=(-p_y, -p_x), dims=(0, 1)
-                    )
+                    masks[i, 0] = torch.roll(mask_moved[i, 0],
+                                             shifts=(-p_y, -p_x),
+                                             dims=(0, 1))
 
                 masks = masks.repeat(1, C, 1, 1)
                 mask_moved = mask_moved.repeat(1, C, 1, 1)
 
                 original_stylemap_all = original_stylemap.repeat(
-                    interpolation_step, 1, 1, 1
-                )
+                    interpolation_step, 1, 1, 1)
 
                 for inter_s in range(interpolation_step):
                     weight = inter_s / (interpolation_step - 1)
                     for i in range(len(reference_stylemaps)):
                         current_mask = masks[i] > 0.5
                         current_mask_moved = mask_moved[i] > 0.5
-                        original_stylemap_all[inter_s][current_mask_moved] += weight * (
-                            reference_stylemaps[i][current_mask]
-                            - original_stylemap_all[inter_s][current_mask_moved]
-                        )
+                        original_stylemap_all[inter_s][
+                            current_mask_moved] += weight * (
+                                reference_stylemaps[i][current_mask] -
+                                original_stylemap_all[inter_s]
+                                [current_mask_moved])
 
                 style_codes.append(original_stylemap_all)
 
@@ -1071,13 +1167,15 @@ class Decoder(nn.Module):
         out = self.conv1(out, style_codes[0])
 
         for i in range(len(self.convs)):
-            out = self.convs[i](out, [style_codes[2 * i + 1], style_codes[2 * i + 2]])
+            out = self.convs[i](
+                out, [style_codes[2 * i + 1], style_codes[2 * i + 2]])
         image = self.to_rgb(out, style_codes[-1])
 
         return image
 
 
 class Generator(nn.Module):
+
     def __init__(
         self,
         size,
@@ -1106,10 +1204,10 @@ class Generator(nn.Module):
                 out_channel = style_dim * latent_spatial_size * latent_spatial_size
 
             layers.append(
-                EqualLinear(
-                    in_channel, out_channel, lr_mul=lr_mul, activation="fused_lrelu"
-                )
-            )
+                EqualLinear(in_channel,
+                            out_channel,
+                            lr_mul=lr_mul,
+                            activation="fused_lrelu"))
         self.mapping_z = nn.Sequential(*layers)
 
         self.decoder = Decoder(
@@ -1144,12 +1242,10 @@ class Generator(nn.Module):
                 stylecode = self.mapping_z(input)
                 if truncation != None and truncation_mean_latent != None:
                     stylecode = truncation_mean_latent + truncation * (
-                        stylecode - truncation_mean_latent
-                    )
+                        stylecode - truncation_mean_latent)
                 N, C = stylecode.shape
-                stylecode = stylecode.reshape(
-                    N, -1, self.latent_spatial_size, self.latent_spatial_size
-                )
+                stylecode = stylecode.reshape(N, -1, self.latent_spatial_size,
+                                              self.latent_spatial_size)
 
             image = self.decoder(stylecode, mix_space=mix_space, mask=mask)
 
@@ -1195,7 +1291,7 @@ class Model(nn.Module):
             return fake_img
 
         elif mode == "local_editing":
-            # the input for local_editing mode w1 and w2 are fake_stylecode 
+            # the input for local_editing mode w1 and w2 are fake_stylecode
             # (latents) from raw imgs after e_ema()
             w1, w2, mask = input
             w1, w2, mask = w1.unsqueeze(0), w2.unsqueeze(0), mask.unsqueeze(0)
@@ -1218,6 +1314,25 @@ class Model(nn.Module):
             recon_img_ref, _ = self.g_ema(w2, input_is_stylecode=True)
 
             return mixed_image, recon_img_src, recon_img_ref
+
+        elif mode == "ssmr":
+            # single source multi-reference
+            # celeba_hq
+            w_src, w_ref_list, mask_src_list, mask_ref_list = input
+            w_src = w_src.unsqueeze(0)
+            mask_src_list = [
+                mask_src.unsqueeze(0) for mask_src in mask_src_list
+            ]
+            w_ref_list = [w_ref.unsqueeze(0) for w_ref in w_ref_list]
+            mask_ref_list = [
+                mask_ref.unsqueeze(0) for mask_ref in mask_ref_list
+            ]
+
+            mixed_image = self.g_ema([w_src, w_ref_list],
+                                     input_is_stylecode=True,
+                                     mix_space="ssmr_w_plus",
+                                     mask=[mask_src_list, mask_ref_list])[0]
+            return mixed_image
 
 
 def load_model(ckpt_path, device):
